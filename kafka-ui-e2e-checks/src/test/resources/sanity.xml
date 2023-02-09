@@ -2,7 +2,7 @@
 <suite name="SanitySuite">
     <test name="Sanity" enabled="true" parallel="classes" thread-count="1">
         <packages>
-            <package name="com.provectus.kafka.ui.smokeSuite.*"/>
+            <package name="com.provectus.kafka.ui.sanitySuite.*"/>
         </packages>
     </test>
 </suite>
