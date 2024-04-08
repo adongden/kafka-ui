@@ -59,7 +59,7 @@ const Topic: React.FC = () => {
 
   const deleteTopicHandler = async () => {
     await deleteTopic.mutateAsync(topicName);
-    navigate('../..');
+    navigate(clusterTopicsPath(clusterName));
   };
 
   React.useEffect(() => {
@@ -162,9 +162,9 @@ const Topic: React.FC = () => {
             Remove Topic
             {!isTopicDeletionAllowed && (
               <DropdownItemHint>
-                The topic deletion is restricted at the application
+                The topic deletion is restricted at the broker
                 <br />
-                configuration level
+                configuration level (delete.topic.enable = false)
               </DropdownItemHint>
             )}
           </ActionDropdownItem>
@@ -236,7 +236,7 @@ const Topic: React.FC = () => {
         title="Produce Message"
       >
         <Suspense fallback={<PageLoader />}>
-          <SendMessage onSubmit={closeSidebar} />
+          <SendMessage closeSidebar={closeSidebar} />
         </Suspense>
       </SlidingSidebar>
     </>

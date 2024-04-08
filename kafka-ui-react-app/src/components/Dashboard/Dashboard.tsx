@@ -1,22 +1,24 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import PageHeading from 'components/common/PageHeading/PageHeading';
 import * as Metrics from 'components/common/Metrics';
 import { Tag } from 'components/common/Tag/Tag.styled';
 import Switch from 'components/common/Switch/Switch';
 import { useClusters } from 'lib/hooks/api/clusters';
-import { Cluster, ServerStatus } from 'generated-sources';
+import { Cluster, ResourceType, ServerStatus } from 'generated-sources';
 import { ColumnDef } from '@tanstack/react-table';
 import Table, { SizeCell } from 'components/common/NewTable';
 import useBoolean from 'lib/hooks/useBoolean';
-import { Button } from 'components/common/Button/Button';
 import { clusterNewConfigPath } from 'lib/paths';
 import { GlobalSettingsContext } from 'components/contexts/GlobalSettingsContext';
+import { ActionCanButton } from 'components/common/ActionComponent';
+import { useGetUserInfo } from 'lib/hooks/api/roles';
 
 import * as S from './Dashboard.styled';
 import ClusterName from './ClusterName';
 import ClusterTableActionsCell from './ClusterTableActionsCell';
 
 const Dashboard: React.FC = () => {
+  const { data } = useGetUserInfo();
   const clusters = useClusters();
   const { value: showOfflineOnly, toggle } = useBoolean(false);
   const appInfo = React.useContext(GlobalSettingsContext);
@@ -55,6 +57,12 @@ const Dashboard: React.FC = () => {
     return initialColumns;
   }, []);
 
+  const hasPermissions = useMemo(() => {
+    if (!data?.rbacEnabled) return true;
+    return !!data?.userInfo?.permissions.some(
+      (permission) => permission.resource === ResourceType.APPLICATIONCONFIG
+    );
+  }, [data]);
   return (
     <>
       <PageHeading text="Dashboard" />
@@ -80,9 +88,14 @@ const Dashboard: React.FC = () => {
           <label>Only offline clusters</label>
         </div>
         {appInfo.hasDynamicConfig && (
-          <Button buttonType="primary" buttonSize="M" to={clusterNewConfigPath}>
+          <ActionCanButton
+            buttonType="primary"
+            buttonSize="M"
+            to={clusterNewConfigPath}
+            canDoAction={hasPermissions}
+          >
             Configure new cluster
-          </Button>
+          </ActionCanButton>
         )}
       </S.Toolbar>
       <Table

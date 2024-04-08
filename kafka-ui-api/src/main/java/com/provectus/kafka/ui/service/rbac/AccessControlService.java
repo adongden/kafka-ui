@@ -12,6 +12,7 @@ import com.provectus.kafka.ui.model.rbac.AccessContext;
 import com.provectus.kafka.ui.model.rbac.Permission;
 import com.provectus.kafka.ui.model.rbac.Resource;
 import com.provectus.kafka.ui.model.rbac.Role;
+import com.provectus.kafka.ui.model.rbac.Subject;
 import com.provectus.kafka.ui.model.rbac.permission.ConnectAction;
 import com.provectus.kafka.ui.model.rbac.permission.ConsumerGroupAction;
 import com.provectus.kafka.ui.model.rbac.permission.SchemaAction;
@@ -19,21 +20,23 @@ import com.provectus.kafka.ui.model.rbac.permission.TopicAction;
 import com.provectus.kafka.ui.service.rbac.extractor.CognitoAuthorityExtractor;
 import com.provectus.kafka.ui.service.rbac.extractor.GithubAuthorityExtractor;
 import com.provectus.kafka.ui.service.rbac.extractor.GoogleAuthorityExtractor;
-import com.provectus.kafka.ui.service.rbac.extractor.LdapAuthorityExtractor;
+import com.provectus.kafka.ui.service.rbac.extractor.OauthAuthorityExtractor;
 import com.provectus.kafka.ui.service.rbac.extractor.ProviderAuthorityExtractor;
+import jakarta.annotation.PostConstruct;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
-import javax.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.collections.CollectionUtils;
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.core.env.Environment;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.context.ReactiveSecurityContextHolder;
 import org.springframework.security.core.context.SecurityContext;
@@ -48,12 +51,16 @@ import reactor.core.publisher.Mono;
 @Slf4j
 public class AccessControlService {
 
+  private static final String ACCESS_DENIED = "Access denied";
+  private static final String ACTIONS_ARE_EMPTY = "actions are empty";
+
   @Nullable
   private final InMemoryReactiveClientRegistrationRepository clientRegistrationRepository;
+  private final RoleBasedAccessControlProperties properties;
+  private final Environment environment;
 
   private boolean rbacEnabled = false;
-  private Set<ProviderAuthorityExtractor> extractors = Collections.emptySet();
-  private final RoleBasedAccessControlProperties properties;
+  private Set<ProviderAuthorityExtractor> oauthExtractors = Collections.emptySet();
 
   @PostConstruct
   public void init() {
@@ -63,21 +70,27 @@ public class AccessControlService {
     }
     rbacEnabled = true;
 
-    this.extractors = properties.getRoles()
+    this.oauthExtractors = properties.getRoles()
         .stream()
         .map(role -> role.getSubjects()
             .stream()
-            .map(provider -> switch (provider.getProvider()) {
+            .map(Subject::getProvider)
+            .distinct()
+            .map(provider -> switch (provider) {
               case OAUTH_COGNITO -> new CognitoAuthorityExtractor();
               case OAUTH_GOOGLE -> new GoogleAuthorityExtractor();
               case OAUTH_GITHUB -> new GithubAuthorityExtractor();
-              case LDAP, LDAP_AD -> new LdapAuthorityExtractor();
-            }).collect(Collectors.toSet()))
+              case OAUTH -> new OauthAuthorityExtractor();
+              default -> null;
+            })
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet()))
         .flatMap(Set::stream)
         .collect(Collectors.toSet());
 
-    if ((clientRegistrationRepository == null || !clientRegistrationRepository.iterator().hasNext())
-        && !properties.getRoles().isEmpty()) {
+    if (!properties.getRoles().isEmpty()
+        && "oauth2".equalsIgnoreCase(environment.getProperty("auth.type"))
+        && (clientRegistrationRepository == null || !clientRegistrationRepository.iterator().hasNext())) {
       log.error("Roles are configured but no authentication methods are present. Authentication might fail.");
     }
   }
@@ -85,6 +98,17 @@ public class AccessControlService {
   public Mono<Void> validateAccess(AccessContext context) {
     if (!rbacEnabled) {
       return Mono.empty();
+    }
+
+    if (CollectionUtils.isNotEmpty(context.getApplicationConfigActions())) {
+      return getUser()
+          .doOnNext(user -> {
+            boolean accessGranted = isApplicationConfigAccessible(context, user);
+
+            if (!accessGranted) {
+              throw new AccessDeniedException(ACCESS_DENIED);
+            }
+          }).then();
     }
 
     return getUser()
@@ -98,10 +122,12 @@ public class AccessControlService {
                   && isConnectAccessible(context, user)
                   && isConnectorAccessible(context, user) // TODO connector selectors
                   && isSchemaAccessible(context, user)
-                  && isKsqlAccessible(context, user);
+                  && isKsqlAccessible(context, user)
+                  && isAclAccessible(context, user)
+                  && isAuditAccessible(context, user);
 
           if (!accessGranted) {
-            throw new AccessDeniedException("Access denied");
+            throw new AccessDeniedException(ACCESS_DENIED);
           }
         })
         .then();
@@ -181,7 +207,7 @@ public class AccessControlService {
     if (context.getTopic() == null && context.getTopicActions().isEmpty()) {
       return true;
     }
-    Assert.isTrue(!context.getTopicActions().isEmpty(), "actions are empty");
+    Assert.isTrue(!context.getTopicActions().isEmpty(), ACTIONS_ARE_EMPTY);
 
     Set<String> requiredActions = context.getTopicActions()
         .stream()
@@ -191,19 +217,23 @@ public class AccessControlService {
     return isAccessible(Resource.TOPIC, context.getTopic(), user, context, requiredActions);
   }
 
-  public Mono<Boolean> isTopicAccessible(InternalTopic dto, String clusterName) {
+  public Mono<List<InternalTopic>> filterViewableTopics(List<InternalTopic> topics, String clusterName) {
     if (!rbacEnabled) {
-      return Mono.just(true);
+      return Mono.just(topics);
     }
 
-    AccessContext accessContext = AccessContext
-        .builder()
-        .cluster(clusterName)
-        .topic(dto.getName())
-        .topicActions(TopicAction.VIEW)
-        .build();
-
-    return getUser().map(u -> isTopicAccessible(accessContext, u));
+    return getUser()
+        .map(user -> topics.stream()
+            .filter(topic -> {
+                  var accessContext = AccessContext
+                      .builder()
+                      .cluster(clusterName)
+                      .topic(topic.getName())
+                      .topicActions(TopicAction.VIEW)
+                      .build();
+                  return isTopicAccessible(accessContext, user);
+                }
+            ).toList());
   }
 
   private boolean isConsumerGroupAccessible(AccessContext context, AuthenticatedUser user) {
@@ -214,7 +244,7 @@ public class AccessControlService {
     if (context.getConsumerGroup() == null && context.getConsumerGroupActions().isEmpty()) {
       return true;
     }
-    Assert.isTrue(!context.getConsumerGroupActions().isEmpty(), "actions are empty");
+    Assert.isTrue(!context.getConsumerGroupActions().isEmpty(), ACTIONS_ARE_EMPTY);
 
     Set<String> requiredActions = context.getConsumerGroupActions()
         .stream()
@@ -247,7 +277,7 @@ public class AccessControlService {
     if (context.getSchema() == null && context.getSchemaActions().isEmpty()) {
       return true;
     }
-    Assert.isTrue(!context.getSchemaActions().isEmpty(), "actions are empty");
+    Assert.isTrue(!context.getSchemaActions().isEmpty(), ACTIONS_ARE_EMPTY);
 
     Set<String> requiredActions = context.getSchemaActions()
         .stream()
@@ -280,7 +310,7 @@ public class AccessControlService {
     if (context.getConnect() == null && context.getConnectActions().isEmpty()) {
       return true;
     }
-    Assert.isTrue(!context.getConnectActions().isEmpty(), "actions are empty");
+    Assert.isTrue(!context.getConnectActions().isEmpty(), ACTIONS_ARE_EMPTY);
 
     Set<String> requiredActions = context.getConnectActions()
         .stream()
@@ -354,8 +384,42 @@ public class AccessControlService {
     return isAccessible(Resource.KSQL, null, user, context, requiredActions);
   }
 
-  public Set<ProviderAuthorityExtractor> getExtractors() {
-    return extractors;
+  private boolean isAclAccessible(AccessContext context, AuthenticatedUser user) {
+    if (!rbacEnabled) {
+      return true;
+    }
+
+    if (context.getAclActions().isEmpty()) {
+      return true;
+    }
+
+    Set<String> requiredActions = context.getAclActions()
+        .stream()
+        .map(a -> a.toString().toUpperCase())
+        .collect(Collectors.toSet());
+
+    return isAccessible(Resource.ACL, null, user, context, requiredActions);
+  }
+
+  private boolean isAuditAccessible(AccessContext context, AuthenticatedUser user) {
+    if (!rbacEnabled) {
+      return true;
+    }
+
+    if (context.getAuditAction().isEmpty()) {
+      return true;
+    }
+
+    Set<String> requiredActions = context.getAuditAction()
+        .stream()
+        .map(a -> a.toString().toUpperCase())
+        .collect(Collectors.toSet());
+
+    return isAccessible(Resource.AUDIT, null, user, context, requiredActions);
+  }
+
+  public Set<ProviderAuthorityExtractor> getOauthExtractors() {
+    return oauthExtractors;
   }
 
   public List<Role> getRoles() {

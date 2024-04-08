@@ -2,6 +2,7 @@ package com.provectus.kafka.ui.util;
 
 
 import com.provectus.kafka.ui.config.ClustersProperties;
+import com.provectus.kafka.ui.config.WebclientProperties;
 import com.provectus.kafka.ui.config.auth.OAuthProperties;
 import com.provectus.kafka.ui.config.auth.RoleBasedAccessControlProperties;
 import com.provectus.kafka.ui.exception.FileUploadException;
@@ -44,6 +45,7 @@ import reactor.core.publisher.Mono;
 public class DynamicConfigOperations {
 
   static final String DYNAMIC_CONFIG_ENABLED_ENV_PROPERTY = "dynamic.config.enabled";
+  static final String FILTERING_GROOVY_ENABLED_PROPERTY = "filtering.groovy.enabled";
   static final String DYNAMIC_CONFIG_PATH_ENV_PROPERTY = "dynamic.config.path";
   static final String DYNAMIC_CONFIG_PATH_ENV_PROPERTY_DEFAULT = "/etc/kafkaui/dynamic_config.yaml";
 
@@ -61,6 +63,10 @@ public class DynamicConfigOperations {
 
   public boolean dynamicConfigEnabled() {
     return "true".equalsIgnoreCase(ctx.getEnvironment().getProperty(DYNAMIC_CONFIG_ENABLED_ENV_PROPERTY));
+  }
+
+  public boolean filteringGroovyEnabled() {
+    return "true".equalsIgnoreCase(ctx.getEnvironment().getProperty(FILTERING_GROOVY_ENABLED_PROPERTY));
   }
 
   private Path dynamicConfigFilePath() {
@@ -89,6 +95,7 @@ public class DynamicConfigOperations {
   }
 
   public PropertiesStructure getCurrentProperties() {
+    checkIfDynamicConfigEnabled();
     return PropertiesStructure.builder()
         .kafka(getNullableBean(ClustersProperties.class))
         .rbac(getNullableBean(RoleBasedAccessControlProperties.class))
@@ -97,6 +104,7 @@ public class DynamicConfigOperations {
                 .type(ctx.getEnvironment().getProperty("auth.type"))
                 .oauth2(getNullableBean(OAuthProperties.class))
                 .build())
+        .webclient(getNullableBean(WebclientProperties.class))
         .build();
   }
 
@@ -110,11 +118,7 @@ public class DynamicConfigOperations {
   }
 
   public void persist(PropertiesStructure properties) {
-    if (!dynamicConfigEnabled()) {
-      throw new ValidationException(
-          "Dynamic config change is not allowed. "
-              + "Set dynamic.config.enabled property to 'true' to enabled it.");
-    }
+    checkIfDynamicConfigEnabled();
     properties.initAndValidate();
 
     String yaml = serializeToYaml(properties);
@@ -122,8 +126,9 @@ public class DynamicConfigOperations {
   }
 
   public Mono<Path> uploadConfigRelatedFile(FilePart file) {
-    String targetDirStr = (String) ctx.getEnvironment().getSystemEnvironment()
-        .getOrDefault(CONFIG_RELATED_UPLOADS_DIR_PROPERTY, CONFIG_RELATED_UPLOADS_DIR_DEFAULT);
+    checkIfDynamicConfigEnabled();
+    String targetDirStr = ctx.getEnvironment()
+        .getProperty(CONFIG_RELATED_UPLOADS_DIR_PROPERTY, CONFIG_RELATED_UPLOADS_DIR_DEFAULT);
 
     Path targetDir = Path.of(targetDirStr);
     if (!Files.exists(targetDir)) {
@@ -145,6 +150,22 @@ public class DynamicConfigOperations {
         .thenReturn(targetFilePath)
         .doOnError(th -> log.error("Error uploading file {}", targetFilePath, th))
         .onErrorMap(th -> new FileUploadException(targetFilePath, th));
+  }
+
+  public void checkIfFilteringGroovyEnabled() {
+    if (!filteringGroovyEnabled()) {
+      throw new ValidationException(
+              "Groovy filters is not allowed. "
+                      + "Set filtering.groovy.enabled property to 'true' to enabled it.");
+    }
+  }
+
+  private void checkIfDynamicConfigEnabled() {
+    if (!dynamicConfigEnabled()) {
+      throw new ValidationException(
+          "Dynamic config change is not allowed. "
+              + "Set dynamic.config.enabled property to 'true' to enabled it.");
+    }
   }
 
   @SneakyThrows
@@ -204,6 +225,7 @@ public class DynamicConfigOperations {
     private ClustersProperties kafka;
     private RoleBasedAccessControlProperties rbac;
     private Auth auth;
+    private WebclientProperties webclient;
 
     @Data
     @Builder
@@ -221,7 +243,10 @@ public class DynamicConfigOperations {
 
       Optional.ofNullable(auth)
           .flatMap(a -> Optional.ofNullable(a.oauth2))
-          .ifPresent(OAuthProperties::validate);
+          .ifPresent(OAuthProperties::init);
+
+      Optional.ofNullable(webclient)
+          .ifPresent(WebclientProperties::validate);
     }
   }
 

@@ -9,7 +9,7 @@ declare module 'yup' {
     TDefault = undefined,
     TFlags extends yup.Flags = ''
   > extends yup.Schema<TType, TContext, TDefault, TFlags> {
-    isJsonObject(): StringSchema<TType, TContext>;
+    isJsonObject(message?: string): StringSchema<TType, TContext>;
   }
 }
 
@@ -31,17 +31,17 @@ export const isValidJsonObject = (value?: string) => {
   return false;
 };
 
-const isJsonObject = () => {
+const isJsonObject = (message?: string) => {
   return yup.string().test(
     'isJsonObject',
     // eslint-disable-next-line no-template-curly-in-string
-    '${path} is not JSON object',
+    message || '${path} is not JSON object',
     isValidJsonObject
   );
 };
-
 /**
- * due to yup rerunning all the object validiation during any render, it makes sense to cache the async results
+ * due to yup rerunning all the object validiation during any render,
+ * it makes sense to cache the async results
  * */
 export function cacheTest(
   asyncValidate: (val?: string, ctx?: yup.AnyObject) => Promise<boolean>
@@ -66,17 +66,17 @@ export const topicFormValidationSchema = yup.object().shape({
   name: yup
     .string()
     .max(249)
-    .required()
+    .required('Topic Name is required')
     .matches(
       TOPIC_NAME_VALIDATION_PATTERN,
       'Only alphanumeric, _, -, and . allowed'
     ),
   partitions: yup
     .number()
-    .min(1)
+    .min(1, 'Number of Partitions must be greater than or equal to 1')
     .max(2147483647)
     .required()
-    .typeError('Number of partitions is required and must be a number'),
+    .typeError('Number of Partitions is required and must be a number'),
   replicationFactor: yup.string(),
   minInSyncReplicas: yup.string(),
   cleanupPolicy: yup.string().required(),

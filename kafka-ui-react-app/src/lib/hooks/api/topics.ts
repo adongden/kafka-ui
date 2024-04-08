@@ -76,7 +76,6 @@ const formatTopicCreation = (form: TopicFormData): TopicCreation => {
     partitions,
     replicationFactor,
     cleanupPolicy,
-    retentionBytes,
     retentionMs,
     maxMessageBytes,
     minInSyncReplicas,
@@ -86,7 +85,6 @@ const formatTopicCreation = (form: TopicFormData): TopicCreation => {
   const configs = {
     'cleanup.policy': cleanupPolicy,
     'retention.ms': retentionMs.toString(),
-    'retention.bytes': retentionBytes.toString(),
     'max.message.bytes': maxMessageBytes.toString(),
     'min.insync.replicas': minInSyncReplicas.toString(),
     ...Object.values(customParams || {}).reduce(topicReducer, {}),
@@ -122,9 +120,6 @@ export function useCreateTopicMutation(clusterName: ClusterName) {
       }),
     {
       onSuccess: () => {
-        showSuccessAlert({
-          message: `Topic successfully created.`,
-        });
         client.invalidateQueries(topicKeys.all(clusterName));
       },
     }
@@ -307,6 +302,11 @@ export function useTopicAnalysis(
       useErrorBoundary: true,
       retry: false,
       suspense: false,
+      onError: (error: Response) => {
+        if (error.status !== 404) {
+          showServerError(error as Response);
+        }
+      },
     }
   );
 }
@@ -314,9 +314,6 @@ export function useAnalyzeTopic(props: GetTopicDetailsRequest) {
   const client = useQueryClient();
   return useMutation(() => api.analyzeTopic(props), {
     onSuccess: () => {
-      showSuccessAlert({
-        message: `Topic analysis successfully started`,
-      });
       client.invalidateQueries(topicKeys.statistics(props));
     },
   });

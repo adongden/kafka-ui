@@ -1,6 +1,7 @@
 package com.provectus.kafka.ui.config;
 
 import com.provectus.kafka.ui.model.MetricsConfig;
+import jakarta.annotation.PostConstruct;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -8,7 +9,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import javax.annotation.Nullable;
-import javax.annotation.PostConstruct;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -24,6 +24,12 @@ import org.springframework.util.StringUtils;
 public class ClustersProperties {
 
   List<Cluster> clusters = new ArrayList<>();
+
+  String internalTopicPrefix;
+
+  Integer adminClientTimeout;
+
+  PollingProperties polling = new PollingProperties();
 
   @Data
   public static class Cluster {
@@ -45,6 +51,14 @@ public class ClustersProperties {
     List<Masking> masking;
     Long pollingThrottleRate;
     TruststoreConfig ssl;
+    AuditProperties audit;
+  }
+
+  @Data
+  public static class PollingProperties {
+    Integer pollTimeoutMs;
+    Integer maxPageSize;
+    Integer defaultPageSize;
   }
 
   @Data
@@ -116,14 +130,32 @@ public class ClustersProperties {
   @Data
   public static class Masking {
     Type type;
-    List<String> fields; //if null or empty list - policy will be applied to all fields
-    List<String> pattern; //used when type=MASK
+    List<String> fields;
+    String fieldsNamePattern;
+    List<String> maskingCharsReplacement; //used when type=MASK
     String replacement; //used when type=REPLACE
     String topicKeysPattern;
     String topicValuesPattern;
 
     public enum Type {
       REMOVE, MASK, REPLACE
+    }
+  }
+
+  @Data
+  @NoArgsConstructor
+  @AllArgsConstructor
+  public static class AuditProperties {
+    String topic;
+    Integer auditTopicsPartitions;
+    Boolean topicAuditEnabled;
+    Boolean consoleAuditEnabled;
+    LogLevel level;
+    Map<String, String> auditTopicProperties;
+
+    public enum LogLevel {
+      ALL,
+      ALTER_ONLY //default
     }
   }
 
